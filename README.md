@@ -40,7 +40,8 @@ print(f'Created data.txt')
 ### 3. Train
 
 ```bash
-python3 train.py
+python3 train.py            # start fresh
+python3 train.py --resume   # pick up from last checkpoint
 ```
 
 Takes 30-60 minutes on Apple MPS, longer on CPU. Saves to `model.pt` when done.
@@ -65,6 +66,30 @@ Or add the project to your PATH in `~/.zshrc` (or `~/.bashrc`):
 ```bash
 export PATH="$HOME/path/to/wodehouse-gpt:$PATH"
 ```
+
+## Sample Output (v4, 17.9M parameters)
+
+```
+> Jeeves
+Jeeves . ."
+
+Jill thoughtfully. In she had never done with a feeling that she
+fended that there was a bit on the street and subserved on and
+all that sort of life had been leaned for a splendid composer of
+the leader Certain Cambeth to her that the house on the mouth.
+
+> Hello Bertie
+Hello Bertie, where he was feeling with the Reggie, but in which
+an absolute creature of the netting of the local dinner was still
+bunitoring.
+
+"Here's a bit. I suppose I went to the house as well. He waited
+here when I see somewhom repried in Amar to me found through one
+again and refuge to the little tree and correct when I have
+expended the sort of potted speech fate in the necklace
+```
+
+Not Shakespeare (or Wodehouse), but it learned English structure, dialogue patterns, and character names from scratch - one character at a time.
 
 ## Training Data
 
@@ -110,7 +135,7 @@ Next character prediction
 | v1 | 64 | 4 | 4 | 226K | 1.86 | Gibberish |
 | v2 | 128 | 6 | 4 | 1.2M | 1.42 | English-ish |
 | v3 | 256 | 8 | 8 | 6.4M | 1.27 | Recognizable Wodehouse |
-| v4 | 384 | 10 | 8 | 17.9M | TBD | TBD |
+| v4 | 384 | 10 | 8 | 17.9M | 1.25 | Wodehouse-ish prose |
 
 ## Project Structure
 
