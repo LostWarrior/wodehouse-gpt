@@ -14,9 +14,9 @@ from tokenizer import build_vocab, encode
 
 # === CONFIGURATION ===
 vocab_size = 76
-embed_dim = 128
-num_heads = 4
-num_layers = 6
+embed_dim = 256
+num_heads = 8
+num_layers = 8
 max_seq_len = 256
 batch_size = 32
 learning_rate = 3e-4

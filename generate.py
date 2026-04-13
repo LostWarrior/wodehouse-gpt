@@ -16,9 +16,9 @@ char_to_idx, idx_to_char = build_vocab(text)
 
 # === SAME CONFIG AS TRAINING ===
 vocab_size = len(char_to_idx)
-embed_dim = 128
-num_heads = 4
-num_layers = 6
+embed_dim = 256
+num_heads = 8
+num_layers = 8
 max_seq_len = 256
 
 # === LOAD TRAINED MODEL ===
