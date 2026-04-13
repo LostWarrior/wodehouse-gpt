@@ -54,7 +54,7 @@ again and refuge to the little tree and correct when I have
 expended the sort of potted speech fate in the necklace
 ```
 
-Not Shakespeare (or Wodehouse), but it learned English structure, dialogue patterns, and character names from scratch - one character at a time.
+Not Shakespeare (or Wodehouse), maybe after a few drinks.
 
 ## Training Data
 
