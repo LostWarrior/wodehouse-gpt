@@ -9,22 +9,24 @@ git clone git@github.com:LostWarrior/wodehouse-gpt.git
 cd wodehouse-gpt
 ```
 
-### 1. Setup
+### Just want to generate text?
+
+A pre-trained model (`model.pt`) is included in the repo. Just install dependencies and go:
 
 ```bash
 ./setup
+./jeeves "Jeeves entered the room"
 ```
 
-Creates venv, installs dependencies, downloads 30 Wodehouse novels (11.2M characters) from [edwardjross/wodehouse](https://huggingface.co/datasets/edwardjross/wodehouse), and prepares the training data.
-
-### 2. Train
+### Want to train it yourself?
 
 ```bash
-python3 train.py            # start fresh
+./setup
+python3 train.py            # start fresh (~30-60 min on Apple MPS)
 python3 train.py --resume   # pick up from last checkpoint
 ```
 
-Takes 30-60 minutes on Apple MPS, longer on CPU. Saves to `model.pt` when done.
+Edit `config.py` to change model size, training steps, etc. Training overwrites `model.pt`.
 
 ### 3. Generate
 
