@@ -10,23 +10,5 @@ source venv/bin/activate
 echo "Installing dependencies..."
 pip install -r requirements.txt --quiet
 
-echo "Downloading Wodehouse dataset..."
-curl -kL -o wodehouse_train.parquet \
-  "https://huggingface.co/datasets/edwardjross/wodehouse/resolve/main/data/train-00000-of-00001.parquet"
-
-echo "Preparing training data..."
-python3 -c "
-import pyarrow.parquet as pq
-table = pq.read_table('wodehouse_train.parquet')
-df = table.to_pandas()
-with open('data.txt', 'w') as f:
-    for _, row in df.iterrows():
-        f.write(row['content'])
-        f.write('\n\n')
-print(f'Created data.txt ({len(df)} books)')
-"
-
 echo ""
-echo "Setup complete. Next steps:"
-echo "  python3 train.py          # train the model"
-echo "  ./jeeves                  # generate text (after training)"
+echo "Setup complete. Run: ./jeeves"

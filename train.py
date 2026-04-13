@@ -10,6 +10,7 @@ Supports resuming from a checkpoint: python3 train.py --resume
 """
 
 import os
+import json
 import argparse
 import torch
 import torch.nn.functional as F
@@ -37,6 +38,11 @@ with open('data.txt', 'r') as f:
 
 char_to_idx, idx_to_char = build_vocab(text)
 vocab_size = len(char_to_idx)
+
+# Save vocab so generate.py doesn't need data.txt
+idx_to_char_str = {str(k): v for k, v in idx_to_char.items()}
+with open('vocab.json', 'w') as f:
+    json.dump({'char_to_idx': char_to_idx, 'idx_to_char': idx_to_char_str}, f)
 
 data = torch.tensor(encode(text, char_to_idx))
 print(f"Total tokens: {len(data):,}")

@@ -7,20 +7,21 @@ Usage:
     ./jeeves "Jeeves" --chars 500 --temp 0.8
 """
 
-import sys
+import json
 import argparse
 import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
-from tokenizer import build_vocab, encode, decode
+from tokenizer import encode, decode
 from config import embed_dim, num_heads, num_layers, max_seq_len
 
 
 def load_model():
-    with open('data.txt', 'r') as f:
-        text = f.read()
+    with open('vocab.json', 'r') as f:
+        vocab = json.load(f)
 
-    char_to_idx, idx_to_char = build_vocab(text)
+    char_to_idx = vocab['char_to_idx']
+    idx_to_char = {int(k): v for k, v in vocab['idx_to_char'].items()}
     vocab_size = len(char_to_idx)
 
     model_config = dict(vocab_size=vocab_size, embed_dim=embed_dim,

@@ -11,7 +11,7 @@ cd wodehouse-gpt
 ./jeeves "Jeeves entered the room"
 ```
 
-A pre-trained model (`model.pt`) is included in the repo. `./setup` installs dependencies and prepares the data.
+A pre-trained model (`model.pt`) is included in the repo. `./setup` just installs dependencies.
 
 ```bash
 ./jeeves                                    # interactive mode
@@ -124,12 +124,12 @@ demos/             # step-by-step learning demos
 ### Training
 
 ```bash
-./setup
+./setup-dev                         # installs dependencies + downloads books
 python3 train.py            # start fresh (~30-60 min on Apple MPS)
 python3 train.py --resume   # pick up from last checkpoint
 ```
 
-Training overwrites `model.pt`.
+Training saves `model.pt` and `vocab.json`.
 
 ### Configuration
 

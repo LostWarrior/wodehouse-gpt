@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+
+# Run base setup first
+"$DIR/setup"
+source venv/bin/activate
+
+echo ""
+echo "Downloading Wodehouse dataset..."
+curl -kL -o wodehouse_train.parquet \
+  "https://huggingface.co/datasets/edwardjross/wodehouse/resolve/main/data/train-00000-of-00001.parquet"
+
+echo "Preparing training data..."
+python3 -c "
+import pyarrow.parquet as pq
+table = pq.read_table('wodehouse_train.parquet')
+df = table.to_pandas()
+with open('data.txt', 'w') as f:
+    for _, row in df.iterrows():
+        f.write(row['content'])
+        f.write('\n\n')
+print(f'Created data.txt ({len(df)} books)')
+"
+
+echo ""
+echo "Dev setup complete. Run: python3 train.py"
