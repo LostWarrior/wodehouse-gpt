@@ -7,28 +7,11 @@ A GPT-style transformer built from the ground up - no huggingface transformers l
 ```bash
 git clone git@github.com:LostWarrior/wodehouse-gpt.git
 cd wodehouse-gpt
-```
-
-### Just want to generate text?
-
-A pre-trained model (`model.pt`) is included in the repo. Just install dependencies and go:
-
-```bash
 ./setup
 ./jeeves "Jeeves entered the room"
 ```
 
-### Want to train it yourself?
-
-```bash
-./setup
-python3 train.py            # start fresh (~30-60 min on Apple MPS)
-python3 train.py --resume   # pick up from last checkpoint
-```
-
-Edit `config.py` to change model size, training steps, etc. Training overwrites `model.pt`.
-
-### 3. Generate
+A pre-trained model (`model.pt`) is included in the repo. `./setup` installs dependencies and prepares the data.
 
 ```bash
 ./jeeves                                    # interactive mode
@@ -124,9 +107,9 @@ Next character prediction
 ```
 model.py           # complete transformer (MultiHeadAttention, FeedForward, TransformerBlock, WodehouseGPT)
 tokenizer.py       # character-level tokenizer (build_vocab, encode, decode)
-train.py           # training loop (data loading, batching, loss, optimization)
 generate.py        # text generation (temperature sampling, interactive/CLI modes)
 jeeves             # CLI wrapper - run ./jeeves "prompt" from anywhere
+config.py          # all model and training settings
 demos/             # step-by-step learning demos
   attention.py           # single-head self-attention
   multihead_attention.py # multi-head attention
@@ -136,7 +119,19 @@ demos/             # step-by-step learning demos
   layernorm_demo.py      # normalization + residual connections
 ```
 
-## Configuration
+## For Developers
+
+### Training
+
+```bash
+./setup
+python3 train.py            # start fresh (~30-60 min on Apple MPS)
+python3 train.py --resume   # pick up from last checkpoint
+```
+
+Training overwrites `model.pt`.
+
+### Configuration
 
 Edit `config.py` - both `train.py` and `generate.py` read from it:
 
