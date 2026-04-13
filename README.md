@@ -12,32 +12,12 @@ cd wodehouse-gpt
 ### 1. Setup
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./setup
 ```
 
-### 2. Download and prepare data
+Creates venv, installs dependencies, downloads 30 Wodehouse novels (11.2M characters) from [edwardjross/wodehouse](https://huggingface.co/datasets/edwardjross/wodehouse), and prepares the training data.
 
-```bash
-curl -kL -o wodehouse_train.parquet \
-  "https://huggingface.co/datasets/edwardjross/wodehouse/resolve/main/data/train-00000-of-00001.parquet"
-
-python3 -c "
-import pyarrow.parquet as pq
-table = pq.read_table('wodehouse_train.parquet')
-df = table.to_pandas()
-with open('data.txt', 'w') as f:
-    for _, row in df.iterrows():
-        f.write(row['content'])
-        f.write('\n\n')
-print(f'Created data.txt')
-"
-```
-
-30 Wodehouse novels, 11.2 million characters from Project Gutenberg via [edwardjross/wodehouse](https://huggingface.co/datasets/edwardjross/wodehouse).
-
-### 3. Train
+### 2. Train
 
 ```bash
 python3 train.py            # start fresh
@@ -46,7 +26,7 @@ python3 train.py --resume   # pick up from last checkpoint
 
 Takes 30-60 minutes on Apple MPS, longer on CPU. Saves to `model.pt` when done.
 
-### 4. Generate
+### 3. Generate
 
 ```bash
 ./jeeves                                    # interactive mode
