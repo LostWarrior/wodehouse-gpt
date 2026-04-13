@@ -14,14 +14,14 @@ from tokenizer import build_vocab, encode
 
 # === CONFIGURATION ===
 vocab_size = 76
-embed_dim = 64
+embed_dim = 128
 num_heads = 4
-num_layers = 4
+num_layers = 6
 max_seq_len = 256
 batch_size = 32
 learning_rate = 3e-4
-max_steps = 5000
-eval_interval = 500
+max_steps = 10000
+eval_interval = 1000
 
 # === DEVICE (Apple GPU > NVIDIA GPU > CPU) ===
 if torch.backends.mps.is_available():
