@@ -5,23 +5,21 @@ Training loop for WodehouseGPT.
 2. Loss          - measure how wrong
 3. Backward pass - figure out which way to nudge
 4. Optimizer     - nudge the weights
+
+Supports resuming from a checkpoint: python3 train.py --resume
 """
 
+import os
+import argparse
 import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
 from tokenizer import build_vocab, encode
+from config import embed_dim, num_heads, num_layers, max_seq_len, \
+    batch_size, learning_rate, max_steps, eval_interval
 
-# === CONFIGURATION ===
-vocab_size = 76
-embed_dim = 256
-num_heads = 8
-num_layers = 8
-max_seq_len = 256
-batch_size = 32
-learning_rate = 3e-4
-max_steps = 10000
-eval_interval = 1000
+CHECKPOINT_PATH = 'checkpoint.pt'
+MODEL_PATH = 'model.pt'
 
 # === DEVICE (Apple GPU > NVIDIA GPU > CPU) ===
 if torch.backends.mps.is_available():
@@ -89,25 +87,48 @@ def estimate_loss():
     return losses
 
 
+def save_checkpoint(step):
+    torch.save({
+        'step': step,
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+    }, CHECKPOINT_PATH)
+
+
+# === PARSE ARGS ===
+parser = argparse.ArgumentParser()
+parser.add_argument('--resume', action='store_true', help='Resume from checkpoint')
+args = parser.parse_args()
+
 # === CREATE MODEL AND OPTIMIZER ===
-print(f"\nCreating model...")
 model = WodehouseGPT(vocab_size, embed_dim, num_heads, num_layers, max_seq_len)
 model = model.to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+start_step = 0
+
+if args.resume and os.path.exists(CHECKPOINT_PATH):
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    start_step = checkpoint['step']
+    print(f"\nResuming from step {start_step}")
+else:
+    print(f"\nStarting fresh")
 
 total_params = sum(p.numel() for p in model.parameters())
 print(f"Parameters: {total_params:,}")
 
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
 # === TRAINING LOOP ===
-print(f"\nTraining for {max_steps} steps...")
+print(f"\nTraining from step {start_step} to {max_steps}...")
 print()
 
-for step in range(max_steps):
+for step in range(start_step, max_steps):
 
     if step % eval_interval == 0:
         losses = estimate_loss()
         print(f"Step {step:5d} | train loss: {losses['train']:.4f} | val loss: {losses['val']:.4f}")
+        save_checkpoint(step)
 
     # Forward pass
     x, y = get_batch('train')
@@ -128,5 +149,8 @@ losses = estimate_loss()
 print(f"Step {max_steps:5d} | train loss: {losses['train']:.4f} | val loss: {losses['val']:.4f}")
 print("\nTraining complete!")
 
-torch.save(model.state_dict(), 'model.pt')
-print("Model saved to model.pt")
+torch.save(model.state_dict(), MODEL_PATH)
+print(f"Model saved to {MODEL_PATH}")
+
+save_checkpoint(max_steps)
+print(f"Checkpoint saved to {CHECKPOINT_PATH}")

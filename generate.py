@@ -1,83 +1,101 @@
 """
 Generate text from a trained WodehouseGPT model.
 
-Give it a starting prompt, it predicts one character at a time.
+Usage:
+    ./jeeves "Jeeves"                     Single prompt
+    ./jeeves                              Interactive mode
+    ./jeeves "Jeeves" --chars 500 --temp 0.8
 """
 
+import sys
+import argparse
 import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
 from tokenizer import build_vocab, encode, decode
-
-# === LOAD VOCAB ===
-with open('data.txt', 'r') as f:
-    text = f.read()
-char_to_idx, idx_to_char = build_vocab(text)
-
-# === SAME CONFIG AS TRAINING ===
-vocab_size = len(char_to_idx)
-embed_dim = 256
-num_heads = 8
-num_layers = 8
-max_seq_len = 256
-
-# === LOAD TRAINED MODEL ===
-device = 'mps' if torch.backends.mps.is_available() else 'cpu'
-
-model = WodehouseGPT(vocab_size, embed_dim, num_heads, num_layers, max_seq_len)
-model.load_state_dict(torch.load('model.pt', map_location=device))
-model = model.to(device)
-model.eval()
+from config import embed_dim, num_heads, num_layers, max_seq_len
 
 
-def generate(prompt, num_chars=500, temperature=0.8):
-    """
-    Generate text starting from a prompt.
+def load_model():
+    with open('data.txt', 'r') as f:
+        text = f.read()
 
-    temperature controls randomness:
-        0.1 = very predictable, repeats common patterns
-        0.8 = balanced (default)
-        1.5 = creative but messy
-    """
-    token_ids = encode(prompt, char_to_idx)
-    tokens = torch.tensor(token_ids, device=device).unsqueeze(0)
+    char_to_idx, idx_to_char = build_vocab(text)
+    vocab_size = len(char_to_idx)
+
+    model_config = dict(vocab_size=vocab_size, embed_dim=embed_dim,
+                        num_heads=num_heads, num_layers=num_layers,
+                        max_seq_len=max_seq_len)
+
+    device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+
+    model = WodehouseGPT(**model_config)
+    model.load_state_dict(torch.load('model.pt', map_location=device))
+    model.to(device)
+    model.eval()
+
+    return model, char_to_idx, idx_to_char, model_config, device
+
+
+def generate(model, char_to_idx, idx_to_char, config, device,
+             prompt, num_chars=500, temperature=0.8):
+    tokens = torch.tensor(
+        encode(prompt, char_to_idx), device=device
+    ).unsqueeze(0)
 
     with torch.no_grad():
         for _ in range(num_chars):
-            # Only feed the last max_seq_len characters (model's window)
-            input_tokens = tokens[:, -max_seq_len:]
-
-            # Get predictions
-            logits = model(input_tokens)
-
-            # Take the last position's predictions (what comes next?)
-            next_logits = logits[0, -1, :] / temperature
-
-            # Convert to probabilities and sample
-            probs = F.softmax(next_logits, dim=-1)
+            logits = model(tokens[:, -config['max_seq_len']:])
+            probs = F.softmax(logits[0, -1, :] / temperature, dim=-1)
             next_token = torch.multinomial(probs, 1)
-
-            # Append to sequence
             tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
 
-    # Decode back to text
-    generated_ids = tokens[0].tolist()
-    return decode(generated_ids, idx_to_char)
+    return decode(tokens[0].tolist(), idx_to_char)
 
 
-# === GENERATE ===
-print("=" * 60)
-print("WodehouseGPT - Trained on P.G. Wodehouse")
-print("=" * 60)
-print()
+def interactive(model, char_to_idx, idx_to_char, config, device,
+                num_chars, temperature):
+    print("Type a prompt and press Enter. Type 'quit' to exit.\n")
+    while True:
+        try:
+            prompt = input("> ")
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye!")
+            break
 
-prompts = [
-    "Jeeves",
-    "It was a",
-    "The morning",
-]
+        if prompt.lower() in ('quit', 'exit', 'q'):
+            print("Bye!")
+            break
 
-for prompt in prompts:
-    print(f"--- Prompt: '{prompt}' ---")
-    print(generate(prompt, num_chars=300))
+        print()
+        print(generate(model, char_to_idx, idx_to_char, config, device,
+                       prompt or "\n", num_chars, temperature))
+        print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="WodehouseGPT text generator")
+    parser.add_argument('prompt', nargs='?', default=None, help="Starting text")
+    parser.add_argument('--chars', type=int, default=500, help="Characters to generate")
+    parser.add_argument('--temp', type=float, default=0.8, help="Temperature (0.1-1.5)")
+    args = parser.parse_args()
+
+    print("Loading model...")
+    model, char_to_idx, idx_to_char, config, device = load_model()
+
+    print("=" * 60)
+    print("Jeeves - Trained on P.G. Wodehouse")
+    print(f"Temperature: {args.temp} | Characters: {args.chars}")
+    print("=" * 60)
     print()
+
+    if args.prompt:
+        print(generate(model, char_to_idx, idx_to_char, config, device,
+                       args.prompt, args.chars, args.temp))
+    else:
+        interactive(model, char_to_idx, idx_to_char, config, device,
+                    args.chars, args.temp)
+
+
+if __name__ == '__main__':
+    main()

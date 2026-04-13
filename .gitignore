@@ -2,4 +2,5 @@ venv/
 __pycache__/
 *.parquet
 data.txt
+checkpoint.pt
 .DS_Store
