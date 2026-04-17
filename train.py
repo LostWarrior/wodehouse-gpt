@@ -10,13 +10,12 @@ Supports resuming from a checkpoint: python3 train.py --resume
 """
 
 import os
-import json
 import argparse
 import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
-from tokenizer import build_vocab, encode
-from config import embed_dim, num_heads, num_layers, max_seq_len, \
+from bpe_tokenizer import train as bpe_train, save as bpe_save
+from config import vocab_size, embed_dim, num_heads, num_layers, max_seq_len, \
     batch_size, learning_rate, max_steps, eval_interval
 
 CHECKPOINT_PATH = 'checkpoint.pt'
@@ -36,15 +35,10 @@ print("Loading data...")
 with open('data.txt', 'r') as f:
     text = f.read()
 
-char_to_idx, idx_to_char = build_vocab(text)
-vocab_size = len(char_to_idx)
+merges, tokens = bpe_train(text, vocab_size)
+bpe_save(merges)
 
-# Save vocab so generate.py doesn't need data.txt
-idx_to_char_str = {str(k): v for k, v in idx_to_char.items()}
-with open('vocab.json', 'w') as f:
-    json.dump({'char_to_idx': char_to_idx, 'idx_to_char': idx_to_char_str}, f)
-
-data = torch.tensor(encode(text, char_to_idx))
+data = torch.tensor(tokens)
 print(f"Total tokens: {len(data):,}")
 
 # 90% for training, 10% for validation

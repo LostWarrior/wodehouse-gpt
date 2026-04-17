@@ -4,6 +4,7 @@ Both train.py and generate.py read from here.
 """
 
 # Model
+vocab_size = 4000
 embed_dim = 384
 num_heads = 8
 num_layers = 10
