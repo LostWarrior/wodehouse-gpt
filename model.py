@@ -17,7 +17,7 @@ import math
 
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, embed_dim, num_heads):
+    def __init__(self, embed_dim, num_heads, dropout=0.0):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
@@ -28,6 +28,8 @@ class MultiHeadAttention(nn.Module):
         self.out = nn.Linear(embed_dim, embed_dim)
 
         self.scale = math.sqrt(self.head_dim)
+        self.attn_dropout = nn.Dropout(dropout)
+        self.out_dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         batch, seq_len, embed_dim = x.shape
@@ -47,10 +49,12 @@ class MultiHeadAttention(nn.Module):
         scores = scores.masked_fill(~mask, float('-inf'))
 
         weights = F.softmax(scores, dim=-1)
+        weights = self.attn_dropout(weights)
         out = weights @ v
 
         out = out.transpose(1, 2).contiguous().view(batch, seq_len, embed_dim)
         out = self.out(out)
+        out = self.out_dropout(out)
         return out
 
 
@@ -58,16 +62,18 @@ class MultiHeadAttention(nn.Module):
 
 class FeedForward(nn.Module):
 
-    def __init__(self, embed_dim):
+    def __init__(self, embed_dim, dropout=0.0):
         super().__init__()
         self.linear1 = nn.Linear(embed_dim, embed_dim * 4)
         self.linear2 = nn.Linear(embed_dim * 4, embed_dim)
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
+        x = self.dropout(x)
         return x
 
 
@@ -76,10 +82,10 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     """One block = attention + feed-forward, each with norm and residual."""
 
-    def __init__(self, embed_dim, num_heads):
+    def __init__(self, embed_dim, num_heads, dropout=0.0):
         super().__init__()
-        self.attention = MultiHeadAttention(embed_dim, num_heads)
-        self.feedforward = FeedForward(embed_dim)
+        self.attention = MultiHeadAttention(embed_dim, num_heads, dropout)
+        self.feedforward = FeedForward(embed_dim, dropout)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
@@ -98,16 +104,17 @@ class TransformerBlock(nn.Module):
 class WodehouseGPT(nn.Module):
     """The complete transformer: embeddings -> N blocks -> predict next char."""
 
-    def __init__(self, vocab_size, embed_dim, num_heads, num_layers, max_seq_len):
+    def __init__(self, vocab_size, embed_dim, num_heads, num_layers, max_seq_len, dropout=0.0):
         super().__init__()
 
         # Embeddings (from steps 4-5)
         self.char_embedding = nn.Embedding(vocab_size, embed_dim)
         self.pos_embedding = nn.Embedding(max_seq_len, embed_dim)
+        self.embed_dropout = nn.Dropout(dropout)
 
         # Stack of transformer blocks
         self.blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads)
+            TransformerBlock(embed_dim, num_heads, dropout)
             for _ in range(num_layers)
         ])
 
@@ -121,6 +128,7 @@ class WodehouseGPT(nn.Module):
         # Step 1: Embed characters + positions
         positions = torch.arange(seq_len, device=token_ids.device)
         x = self.char_embedding(token_ids) + self.pos_embedding(positions)
+        x = self.embed_dropout(x)
 
         # Step 2: Pass through all transformer blocks
         for block in self.blocks:

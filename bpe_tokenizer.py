@@ -76,12 +76,34 @@ def train(text, vocab_size):
     return merges, tokens
 
 
+def apply_merges(text, merges):
+    """
+    Encode a long text using pre-learned merge rules.
+
+    Same result as encode(), but prints progress.
+    Use this for the full training corpus.
+    """
+    tokens = list(text.encode('utf-8'))
+    initial_len = len(tokens)
+    num_merges = len(merges)
+    print(f"Applying {num_merges} merges to {initial_len:,} bytes...")
+
+    for i, (pair, new_id) in enumerate(merges.items()):
+        tokens = _merge(tokens, pair, new_id)
+        if (i + 1) % 500 == 0:
+            print(f"  merge {i + 1}/{num_merges} | tokens: {len(tokens):,}")
+
+    ratio = initial_len / len(tokens)
+    print(f"Done. {initial_len:,} -> {len(tokens):,} tokens ({ratio:.1f}x compression)")
+    return tokens
+
+
 def encode(text, merges):
     """
     Encode a string to token IDs.
 
     Applies merges sequentially - fine for short text like prompts.
-    For the full training corpus, use the tokens returned by train().
+    For the full training corpus, use apply_merges() instead.
     """
     tokens = list(text.encode('utf-8'))
     for pair, new_id in merges.items():

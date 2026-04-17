@@ -14,9 +14,9 @@ import argparse
 import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
-from bpe_tokenizer import train as bpe_train, save as bpe_save
+from bpe_tokenizer import train as bpe_train, apply_merges, save as bpe_save
 from config import vocab_size, embed_dim, num_heads, num_layers, max_seq_len, \
-    batch_size, learning_rate, max_steps, eval_interval
+    dropout, batch_size, learning_rate, max_steps, eval_interval
 
 CHECKPOINT_PATH = 'checkpoint.pt'
 MODEL_PATH = 'model.pt'
@@ -35,10 +35,12 @@ print("Loading data...")
 with open('data.txt', 'r') as f:
     text = f.read()
 
-merges, tokens = bpe_train(text, vocab_size)
+# Train tokenizer on first 1M chars (frequencies stabilize well before this).
+# Then encode the full text using those merge rules.
+merges, _ = bpe_train(text[:1_000_000], vocab_size)
 bpe_save(merges)
 
-data = torch.tensor(tokens)
+data = torch.tensor(apply_merges(text, merges))
 print(f"Total tokens: {len(data):,}")
 
 # 90% for training, 10% for validation
@@ -101,7 +103,7 @@ parser.add_argument('--resume', action='store_true', help='Resume from checkpoin
 args = parser.parse_args()
 
 # === CREATE MODEL AND OPTIMIZER ===
-model = WodehouseGPT(vocab_size, embed_dim, num_heads, num_layers, max_seq_len)
+model = WodehouseGPT(vocab_size, embed_dim, num_heads, num_layers, max_seq_len, dropout)
 model = model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 

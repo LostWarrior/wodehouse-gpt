@@ -9,6 +9,7 @@ embed_dim = 384
 num_heads = 8
 num_layers = 10
 max_seq_len = 256
+dropout = 0.1
 
 # Training
 batch_size = 16
