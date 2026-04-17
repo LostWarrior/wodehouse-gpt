@@ -1578,7 +1578,7 @@ quarrelled with the man I really loved ... I don't want to marry Bream.
 <billie>You don't understand, father dear,
 
 <narration>Mr. Peters uttered a subdued gargling sound. He was finding this scene oppressive to a not very robust intellect.
-<bill>He--Mr. Samuel--told me your name, Miss Milliken,
+<billie>He--Mr. Samuel--told me your name, Miss Milliken,
 <narration>he said dully. Billie stared at him.
 <cynthia>Mr. Marlowe told you my name was Miss Milliken!
 
@@ -1685,7 +1685,7 @@ smash up in a ditch!
 <cynthia>But you want keeping
 in order,
 <narration>she added severely.
-<bill>You will do that when we're married. When we're married!
+<billie>You will do that when we're married. When we're married!
 
 <billie>The only trouble is,
 <narration>said Billie,
@@ -6223,7 +6223,7 @@ is thicker than water! I'll bet they never had any aunts!
 <eve>But you want keeping
 in order,
 <narration>she added severely.
-<bill>You will do that when we're married. When we're married!
+<billie>You will do that when we're married. When we're married!
 
 <billie>The only trouble is,
 <narration>said Billie,
@@ -7296,7 +7296,7 @@ been paying me insurance money, to interview me,
 <narration>said Teddy Weeks. Ukridge and I exchanged another glance. An uneasy glance this time. I think that already a grim foreboding had begun to cast its shadow over us.
 <ukridge>Surely you remember me, Teddy, old horse?
 <narration>said Ukridge, anxiously. Teddy Weeks knit his brow, concentrating painfully.
-<ted>Why, of course,
+<teddy>Why, of course,
 
 <bowles>Sir?
 <narration>said Bowles, in his fruity ex-butler way, popping up from the depths accompanied by a rich smell of finnan haddie.
