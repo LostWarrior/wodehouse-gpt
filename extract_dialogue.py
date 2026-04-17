@@ -111,6 +111,10 @@ NOT_NAMES = {
     'at', 'in', 'on', 'up', 'out', 'off', 'by', 'as', 'with',
     # common words
     'one', 'all', 'some', 'very', 'much', 'just', 'now', 'well',
+    'our', 'old', 'new', 'own', 'other', 'another', 'any', 'every',
+    'last', 'next', 'first', 'only', 'same', 'such', 'both',
+    'thing', 'things', 'man', 'woman', 'girl', 'boy', 'fellow',
+    'voice', 'face', 'hand', 'head', 'eye', 'eyes',
     'what', 'who', 'how', 'why', 'when', 'where', 'which',
     'nothing', 'something', 'everything', 'anything',
     # adverbs (often appear after closing quote)
@@ -347,7 +351,34 @@ def extract_dialogues(text, config):
             "pos": quote_start,
         })
 
-    # Pass 2: group into exchanges
+    # Pass 2: limited alternation
+    # For unattributed lines, alternate between characters already named
+    # in the current run of dialogue. Only works when exactly 2 characters
+    # have been identified (otherwise we don't know who to alternate to).
+    last_speaker = None
+    named_in_run = set()
+
+    for entry in attributed:
+        if entry["speaker"] is not None:
+            last_speaker = entry["speaker"]
+            named_in_run.add(entry["speaker"])
+        elif last_speaker is not None and len(named_in_run) == 2:
+            # Alternate to the other named character
+            other = [s for s in named_in_run if s != last_speaker]
+            if other:
+                entry["speaker"] = other[0]
+                last_speaker = entry["speaker"]
+        else:
+            # Can't resolve - reset the run
+            last_speaker = None
+            named_in_run = set()
+
+        # Reset run tracking on large gaps
+        if entry["speaker"] is None:
+            last_speaker = None
+            named_in_run = set()
+
+    # Pass 3: group into exchanges
     exchanges = []
     current = []
 
