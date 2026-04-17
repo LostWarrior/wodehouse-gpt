@@ -93,24 +93,90 @@ def find_quotes(text):
     return quotes
 
 
+# Words that look like names but aren't - skip these
+NOT_NAMES = {
+    # pronouns
+    'he', 'she', 'it', 'they', 'we', 'you',
+    'him', 'her', 'his', 'its', 'them', 'their', 'my', 'me',
+    # articles / determiners
+    'the', 'this', 'that', 'then', 'there', 'here', 'an', 'a',
+    # titles (handled separately as prefixes)
+    'mr', 'mrs', 'miss', 'sir', 'lord', 'lady', 'aunt', 'uncle',
+    'doctor', 'captain', 'major', 'colonel', 'professor',
+    # conjunctions / prepositions / common verbs
+    'not', 'but', 'and', 'for', 'nor', 'yet', 'still', 'to', 'of',
+    'is', 'was', 'be', 'been', 'are', 'were', 'had', 'has', 'have',
+    'do', 'did', 'does', 'will', 'would', 'could', 'should', 'may',
+    'can', 'shall', 'might', 'must', 'if', 'or', 'so', 'no', 'yes',
+    'at', 'in', 'on', 'up', 'out', 'off', 'by', 'as', 'with',
+    # common words
+    'one', 'all', 'some', 'very', 'much', 'just', 'now', 'well',
+    'what', 'who', 'how', 'why', 'when', 'where', 'which',
+    'nothing', 'something', 'everything', 'anything',
+    # adverbs (often appear after closing quote)
+    'suddenly', 'quietly', 'slowly', 'quickly', 'softly',
+    'eagerly', 'hastily', 'breathlessly', 'sharply', 'firmly',
+    'coldly', 'hotly', 'fiercely', 'grimly', 'briskly',
+    'bitterly', 'cheerfully', 'sadly', 'wearily', 'anxiously',
+    'calmly', 'stiffly', 'huskily', 'thoughtfully', 'dreamily',
+    'carelessly', 'helplessly', 'hopefully', 'nervously',
+    'politely', 'abruptly', 'doubtfully', 'mildly', 'severely',
+    'kindly', 'gently', 'gravely', 'shortly', 'smoothly',
+}
+
+# Titles that prefix a character name - capture both words
+TITLE_WORDS = {'Mr', 'Mrs', 'Miss', 'Sir', 'Lord', 'Lady', 'Aunt', 'Uncle',
+               'Doctor', 'Captain', 'Major', 'Colonel', 'Professor'}
+
+
 def _build_verb_pattern():
-    """Build a single regex that matches 'VERB Name' or 'Name VERB' or 'I VERB'."""
+    """Build regexes that match 'VERB Name' or 'Name VERB' patterns."""
     verbs = '|'.join(re.escape(v) for v in ATTRIBUTION_VERBS)
-    # Matches: said Jeeves / Jeeves said / said I / I said
-    # Name = capitalized word OR "I"
-    after_verb_name = re.compile(
-        rf'^\s*(?P<verb1>{verbs})\s+(?P<name1>I|[A-Z][a-z]+)\b', re.IGNORECASE
-    )
-    after_name_verb = re.compile(
-        rf'^\s*(?P<name2>I|[A-Z][a-z]+)\s+(?P<verb2>{verbs})\b', re.IGNORECASE
-    )
-    before_name_verb = re.compile(
-        rf'(?P<name3>I|[A-Z][a-z]+)\s+(?P<verb3>{verbs})\s*,?\s*$', re.IGNORECASE
-    )
-    before_verb_name = re.compile(
-        rf'(?P<verb4>{verbs})\s+(?P<name4>I|[A-Z][a-z]+)\s*,?\s*$', re.IGNORECASE
-    )
+    titles = '|'.join(re.escape(t) for t in TITLE_WORDS)
+
+    # Name = "I" OR "Title Surname" OR plain "Surname"
+    # Title names: "Lord Marshmoreton", "Aunt Agatha"
+    # Plain names: "Jeeves", "Psmith"
+    name_pat = rf'(?:(?:{titles})\s+)?(?P<{{group}}>I|[A-Z][a-z]+(?:\-[A-Z][a-z]+)?)'
+
+    def make(template, group_name, verb_group):
+        """Build a compiled regex from a template with name and verb groups."""
+        name = name_pat.replace('{group}', group_name)
+        verb = rf'(?P<{verb_group}>{verbs})'
+        return re.compile(template.format(name=name, verb=verb), re.IGNORECASE)
+
+    after_verb_name = make(r'^\s*{verb}\s+{name}\b', 'name1', 'verb1')
+    after_name_verb = make(r'^\s*{name}\s+{verb}\b', 'name2', 'verb2')
+    before_name_verb = make(r'{name}\s+{verb}\s*,?\s*$', 'name3', 'verb3')
+    before_verb_name = make(r'{verb}\s+{name}\s*,?\s*$', 'name4', 'verb4')
+
     return after_verb_name, after_name_verb, before_name_verb, before_verb_name
+
+
+def _resolve_name(match, name_group, verb_group, aliases, narrator):
+    """Extract and resolve a name from a regex match. Returns (name, verb) or (None, None)."""
+    name = match.group(name_group)
+    verb = match.group(verb_group).lower()
+
+    if name == 'I':
+        return narrator, verb
+
+    if name.lower() in NOT_NAMES or len(name) < 3:
+        return None, None
+
+    # Check if there's a title prefix in the full match
+    full = match.group(0).strip()
+    for title in TITLE_WORDS:
+        if full.startswith(title + ' ') or full.endswith(' ' + title):
+            # "said Lord Marshmoreton" -> "Lord Marshmoreton"
+            # Find the title + name in the match
+            title_pattern = re.search(rf'({re.escape(title)})\s+({re.escape(name)})', full)
+            if title_pattern:
+                name = f"{title} {name}"
+                break
+
+    canonical = aliases.get(name, name)
+    return canonical, verb
 
 
 def find_speaker(after, before, verb_patterns, aliases, narrator):
@@ -121,57 +187,49 @@ def find_speaker(after, before, verb_patterns, aliases, narrator):
     """
     avn, anv, bnv, bvn = verb_patterns
 
-    # Check after the quote first (most common: "text," said Jeeves)
     for pattern, name_group, verb_group in [
         (avn, 'name1', 'verb1'),
         (anv, 'name2', 'verb2'),
     ]:
         m = pattern.search(after)
         if m:
-            name = m.group(name_group)
-            verb = m.group(verb_group).lower()
-            if name == 'I':
-                return narrator, verb
-            canonical = aliases.get(name, name)
-            return canonical, verb
+            name, verb = _resolve_name(m, name_group, verb_group, aliases, narrator)
+            if name:
+                return name, verb
 
-    # Check before the quote (less common: Jeeves said, "text")
     for pattern, name_group, verb_group in [
         (bnv, 'name3', 'verb3'),
         (bvn, 'name4', 'verb4'),
     ]:
         m = pattern.search(before)
         if m:
-            name = m.group(name_group)
-            verb = m.group(verb_group).lower()
-            if name == 'I':
-                return narrator, verb
-            canonical = aliases.get(name, name)
-            return canonical, verb
+            name, verb = _resolve_name(m, name_group, verb_group, aliases, narrator)
+            if name:
+                return name, verb
 
     return None, None
 
 
-def find_pronoun_speaker(after, verb_patterns, recent_male, recent_female):
+def find_pronoun_speaker(after, recent_male, recent_female):
     """
     Resolve 'he said' / 'she said' using recently mentioned characters.
 
     Returns (name, verb) or (None, None).
     """
-    avn, anv, _, _ = verb_patterns
+    verbs = '|'.join(re.escape(v) for v in ATTRIBUTION_VERBS)
 
-    for pattern, name_group, verb_group in [
-        (avn, 'name1', 'verb1'),
-        (anv, 'name2', 'verb2'),
-    ]:
-        m = pattern.search(after)
-        if m:
-            name = m.group(name_group).lower()
-            verb = m.group(verb_group).lower()
-            if name == 'he' and recent_male:
-                return recent_male, verb
-            if name == 'she' and recent_female:
-                return recent_female, verb
+    # "he said" / "said he" / "she said" / "said she"
+    m = re.search(rf'^\s*(?P<verb>{verbs})\s+(?P<pronoun>he|she)\b', after, re.IGNORECASE)
+    if not m:
+        m = re.search(rf'^\s*(?P<pronoun>he|she)\s+(?P<verb>{verbs})\b', after, re.IGNORECASE)
+
+    if m:
+        pronoun = m.group('pronoun').lower()
+        verb = m.group('verb').lower()
+        if pronoun == 'he' and recent_male:
+            return recent_male, verb
+        if pronoun == 'she' and recent_female:
+            return recent_female, verb
 
     return None, None
 
@@ -257,7 +315,7 @@ def extract_dialogues(text, config):
 
         # Fall back to pronoun resolution
         if speaker is None:
-            speaker, verb = find_pronoun_speaker(after, verb_patterns, recent_male, recent_female)
+            speaker, verb = find_pronoun_speaker(after, recent_male, recent_female)
 
         tone = VERB_TONES.get(verb) if verb else None
 
