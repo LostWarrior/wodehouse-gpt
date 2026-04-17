@@ -1,19 +1,22 @@
 """
 Reusable dialogue extractor for literature.
 
-Extracts conversations between characters from novels and formats
-them as training pairs. Works with any book - just change the config.
+Extracts conversations from novels, tags each line with the speaker's name.
+Discovers characters automatically from attribution patterns ("said Jeeves").
 
 Features:
-    - Attribution via character names and verbs ("said Jeeves")
-    - Pronoun resolution ("he said" -> resolves to last male character mentioned)
-    - Tone/emotion tags from attribution verbs ("whispered" -> quiet)
+    - Automatic character discovery (no need to list every character)
+    - Alias merging (Wooster -> Bertie, Sherlock -> Holmes)
+    - Narrator resolution ("I said" -> Bertie in Jeeves stories)
+    - Tone/emotion tags from attribution verbs
     - Narration context between dialogue lines
-    - Alternation for unattributed lines
+    - Pronoun resolution via recent character mentions
 
 Usage:
-    python3 extract_dialogue.py                  # Jeeves/Bertie from Wodehouse
-    python3 extract_dialogue.py --config holmes   # Holmes/Watson (bring your own data)
+    python3 extract_dialogue.py                        # Wodehouse, all characters
+    python3 extract_dialogue.py --config holmes         # Holmes stories
+    python3 extract_dialogue.py --preview 10            # show more exchanges
+    python3 extract_dialogue.py --no-narration --no-tone  # plain dialogue only
 """
 
 import re
@@ -21,67 +24,46 @@ import argparse
 
 
 # ============================================================
-# CONFIGS - add new ones here for different books/characters
+# CONFIGS
 # ============================================================
+# Characters are discovered automatically from attribution patterns.
+# "aliases" merges different names for the same character.
+# "narrator" resolves "I said" to a character name.
 
 CONFIGS = {
-    "jeeves": {
-        "description": "Jeeves and Bertie Wooster from P.G. Wodehouse",
-        "characters": {
-            "jeeves": {
-                "names": ["Jeeves"],
-                "pronouns": ["he", "him", "his"],
-                "output_tag": "<jeeves>",
-            },
-            "bertie": {
-                "names": ["I", "Bertie", "Wooster"],
-                "pronouns": ["I", "me", "my"],
-                "output_tag": "<human>",
-            },
+    "wodehouse": {
+        "description": "All characters from P.G. Wodehouse novels",
+        "aliases": {
+            "Wooster": "Bertie",
+            "Fink-Nottle": "Gussie",
         },
-        "narrator": "bertie",
+        "narrator": "Bertie",
         "data_file": "data.txt",
     },
     "holmes": {
-        "description": "Sherlock Holmes and Watson from Arthur Conan Doyle",
-        "characters": {
-            "holmes": {
-                "names": ["Holmes", "Sherlock"],
-                "pronouns": ["he", "him", "his"],
-                "output_tag": "<holmes>",
-            },
-            "watson": {
-                "names": ["I", "Watson"],
-                "pronouns": ["I", "me", "my"],
-                "output_tag": "<human>",
-            },
+        "description": "All characters from Sherlock Holmes",
+        "aliases": {
+            "Sherlock": "Holmes",
         },
-        "narrator": "watson",
+        "narrator": "Watson",
         "data_file": "holmes_data.txt",
     },
 }
 
 
 # ============================================================
-# VERB TONES - map attribution verbs to emotional tone
+# VERB TONES
 # ============================================================
-# None means neutral (no tone tag added). Only distinctive tones get tagged.
 
 VERB_TONES = {
-    # neutral - no tag
     "said": None, "asked": None, "replied": None, "answered": None,
     "added": None, "continued": None, "repeated": None, "agreed": None,
     "inquired": None, "announced": None, "admitted": None, "explained": None,
     "declared": None, "responded": None, "began": None, "went on": None,
-    # quiet
     "whispered": "quiet", "murmured": "quiet",
-    # loud
     "shouted": "loud", "cried": "loud", "exclaimed": "loud", "called": "loud",
-    # emotional
     "protested": "upset", "pleaded": "desperate",
-    # thoughtful
     "suggested": "thoughtful", "observed": "thoughtful", "remarked": "thoughtful",
-    # forceful
     "urged": "forceful", "insisted": "forceful",
 }
 
@@ -93,232 +75,221 @@ ATTRIBUTION_VERBS = list(VERB_TONES.keys())
 # ============================================================
 
 def find_quotes(text):
-    """
-    Find all quoted text with their positions.
-
-    Handles both 'single' and "double" quotes.
-    Returns list of (start_pos, end_pos, quoted_text).
-    """
+    """Find all quoted text. Returns list of (start, end, content)."""
     quotes = []
 
-    # Strategy: scan for quote marks and pair them up.
-    i = 0
-    while i < len(text):
-        # Check for opening quote (double or single)
-        if text[i] in ('"', '\u201c'):
-            close_char = '"' if text[i] == '"' else '\u201d'
-            start = i + 1
-            end = text.find(close_char, start)
-            if end == -1:
-                end = text.find(text[i], start)
-            if end != -1 and end - start < 1000:
-                quotes.append((i, end + 1, text[start:end]))
-                i = end + 1
-                continue
+    for m in re.finditer(r'["\u201c](.{1,1000}?)["\u201d]', text, re.DOTALL):
+        quotes.append((m.start(), m.end(), m.group(1)))
 
-        elif text[i] in ("'", '\u2018'):
-            # Single quotes are tricky - also used for apostrophes.
-            # Only treat as dialogue if after whitespace/newline
-            if i == 0 or text[i - 1] in (' ', '\n', '\t'):
-                close_char = "'" if text[i] == "'" else '\u2019'
-                start = i + 1
-                end = text.find(close_char, start)
-                # Skip apostrophes: if close is within same word, skip
-                while end != -1 and end < len(text) - 1 and text[end + 1].isalpha():
-                    end = text.find(close_char, end + 1)
-                if end != -1 and end - start > 1 and end - start < 1000:
-                    content = text[start:end]
-                    if ' ' in content or (content and content[0].isupper()):
-                        quotes.append((i, end + 1, content))
-                        i = end + 1
-                        continue
+    for m in re.finditer(r"(?<=[\s\n])['\u2018](.{2,1000}?)['\u2019]", text, re.DOTALL):
+        content = m.group(1)
+        end_pos = m.end()
+        if end_pos < len(text) and text[end_pos].isalpha():
+            continue
+        if ' ' in content or (content and content[0].isupper()):
+            quotes.append((m.start(), m.end(), content))
 
-        i += 1
-
+    quotes.sort(key=lambda q: q[0])
     return quotes
 
 
-def find_speaker(text, quote_start, quote_end, config, recent_by_pronoun):
+def _build_verb_pattern():
+    """Build a single regex that matches 'VERB Name' or 'Name VERB' or 'I VERB'."""
+    verbs = '|'.join(re.escape(v) for v in ATTRIBUTION_VERBS)
+    # Matches: said Jeeves / Jeeves said / said I / I said
+    # Name = capitalized word OR "I"
+    after_verb_name = re.compile(
+        rf'^\s*(?P<verb1>{verbs})\s+(?P<name1>I|[A-Z][a-z]+)\b', re.IGNORECASE
+    )
+    after_name_verb = re.compile(
+        rf'^\s*(?P<name2>I|[A-Z][a-z]+)\s+(?P<verb2>{verbs})\b', re.IGNORECASE
+    )
+    before_name_verb = re.compile(
+        rf'(?P<name3>I|[A-Z][a-z]+)\s+(?P<verb3>{verbs})\s*,?\s*$', re.IGNORECASE
+    )
+    before_verb_name = re.compile(
+        rf'(?P<verb4>{verbs})\s+(?P<name4>I|[A-Z][a-z]+)\s*,?\s*$', re.IGNORECASE
+    )
+    return after_verb_name, after_name_verb, before_name_verb, before_verb_name
+
+
+def find_speaker(after, before, verb_patterns, aliases, narrator):
     """
-    Try to find who said a quote by looking for attribution nearby.
+    Find who said a quote by looking for 'VERB Name' patterns nearby.
 
-    Checks in order:
-        1. Named attribution: "text," said Jeeves
-        2. Pronoun attribution: "text," he said (resolved via recent mentions)
-
-    Returns (character_key, verb) or (None, None).
+    Returns (canonical_name, verb) or (None, None).
     """
-    # Build lookups
-    name_to_key = {}
-    for char_key, char_info in config["characters"].items():
-        for name in char_info["names"]:
-            name_to_key[name] = char_key
+    avn, anv, bnv, bvn = verb_patterns
 
-    pronoun_to_keys = {}
-    for char_key, char_info in config["characters"].items():
-        for pronoun in char_info.get("pronouns", []):
-            p = pronoun.lower()
-            if p not in pronoun_to_keys:
-                pronoun_to_keys[p] = []
-            pronoun_to_keys[p].append(char_key)
+    # Check after the quote first (most common: "text," said Jeeves)
+    for pattern, name_group, verb_group in [
+        (avn, 'name1', 'verb1'),
+        (anv, 'name2', 'verb2'),
+    ]:
+        m = pattern.search(after)
+        if m:
+            name = m.group(name_group)
+            verb = m.group(verb_group).lower()
+            if name == 'I':
+                return narrator, verb
+            canonical = aliases.get(name, name)
+            return canonical, verb
 
-    after = text[quote_end:quote_end + 80]
-    before = text[max(0, quote_start - 80):quote_start]
-
-    # --- Pass 1: named attribution ---
-
-    for verb in ATTRIBUTION_VERBS:
-        for name, char_key in name_to_key.items():
-            # After: "..." said Jeeves / "..." Jeeves said
-            if re.search(rf'^\s*{re.escape(verb)}\s+{re.escape(name)}\b', after, re.IGNORECASE):
-                return char_key, verb
-            if re.search(rf'^\s*{re.escape(name)}\s+{re.escape(verb)}\b', after, re.IGNORECASE):
-                return char_key, verb
-
-            # Before: Jeeves said, "..."
-            if re.search(rf'{re.escape(name)}\s+{re.escape(verb)}\s*,?\s*$', before, re.IGNORECASE):
-                return char_key, verb
-            if re.search(rf'{re.escape(verb)}\s+{re.escape(name)}\s*,?\s*$', before, re.IGNORECASE):
-                return char_key, verb
-
-    # --- Pass 2: pronoun attribution ---
-    # "he said", "she whispered" - resolve using recently mentioned characters
-
-    for verb in ATTRIBUTION_VERBS:
-        for pronoun, possible_keys in pronoun_to_keys.items():
-            if re.search(rf'^\s*{re.escape(verb)}\s+{re.escape(pronoun)}\b', after, re.IGNORECASE):
-                resolved = recent_by_pronoun.get(pronoun)
-                if resolved and resolved in possible_keys:
-                    return resolved, verb
-
-            if re.search(rf'^\s*{re.escape(pronoun)}\s+{re.escape(verb)}\b', after, re.IGNORECASE):
-                resolved = recent_by_pronoun.get(pronoun)
-                if resolved and resolved in possible_keys:
-                    return resolved, verb
+    # Check before the quote (less common: Jeeves said, "text")
+    for pattern, name_group, verb_group in [
+        (bnv, 'name3', 'verb3'),
+        (bvn, 'name4', 'verb4'),
+    ]:
+        m = pattern.search(before)
+        if m:
+            name = m.group(name_group)
+            verb = m.group(verb_group).lower()
+            if name == 'I':
+                return narrator, verb
+            canonical = aliases.get(name, name)
+            return canonical, verb
 
     return None, None
 
 
-def update_recent_pronouns(text_chunk, config, recent_by_pronoun):
+def find_pronoun_speaker(after, verb_patterns, recent_male, recent_female):
     """
-    Scan a chunk of narration and update which character was most recently
-    mentioned, so pronoun resolution knows who "he"/"she" refers to.
+    Resolve 'he said' / 'she said' using recently mentioned characters.
 
-    If we see "Jeeves" in the text, then "he" now means jeeves.
+    Returns (name, verb) or (None, None).
     """
-    # Find the last occurrence of each character name in the chunk
-    last_pos = {}
-    for char_key, char_info in config["characters"].items():
-        for name in char_info["names"]:
-            if name == "I":
-                continue  # "I" appears everywhere, skip
-            pos = text_chunk.rfind(name)
-            if pos != -1:
-                existing = last_pos.get(char_key, -1)
-                if pos > existing:
-                    last_pos[char_key] = pos
+    avn, anv, _, _ = verb_patterns
 
-    # The character mentioned latest in the text "claims" their pronouns
-    if last_pos:
-        latest_key = max(last_pos, key=last_pos.get)
-        char_info = config["characters"][latest_key]
-        for pronoun in char_info.get("pronouns", []):
-            recent_by_pronoun[pronoun.lower()] = latest_key
+    for pattern, name_group, verb_group in [
+        (avn, 'name1', 'verb1'),
+        (anv, 'name2', 'verb2'),
+    ]:
+        m = pattern.search(after)
+        if m:
+            name = m.group(name_group).lower()
+            verb = m.group(verb_group).lower()
+            if name == 'he' and recent_male:
+                return recent_male, verb
+            if name == 'she' and recent_female:
+                return recent_female, verb
+
+    return None, None
 
 
 def get_narration(text, prev_end, curr_start, max_len=200):
-    """
-    Extract narration text between two quotes.
-
-    Returns cleaned narration string, or None if it's just whitespace
-    or too long to be useful context.
-    """
+    """Extract short narration between two quotes."""
     between = text[prev_end:curr_start].strip()
-
-    # Clean up: collapse whitespace, remove quote attribution we already captured
     between = re.sub(r'\s+', ' ', between)
-
-    if len(between) < 3:
+    if len(between) < 3 or len(between) > max_len:
         return None
-
-    if len(between) > max_len:
-        return None
-
     return between
+
+
+def update_pronoun_context(text_chunk, known_characters, aliases):
+    """
+    Scan narration for character names. Returns (last_male, last_female).
+    Simple heuristic: all characters assumed male unless in FEMALE_NAMES.
+    """
+    female_names = {
+        'Agatha', 'Florence', 'Honoria', 'Madeline', 'Dahlia', 'Stiffy',
+        'Bobbie', 'Pauline', 'Angela', 'Maud', 'Phyllis', 'Alice',
+        'Cynthia', 'Mary', 'Eve', 'Joan', 'Jill', 'Sally', 'Ann',
+        'Irene', 'Adler', 'Hudson', 'Mrs',
+    }
+
+    last_male = None
+    last_female = None
+
+    for name in known_characters:
+        pos = text_chunk.rfind(name)
+        if pos != -1:
+            canonical = aliases.get(name, name)
+            if name in female_names:
+                if last_female is None or pos > text_chunk.rfind(last_female or ''):
+                    last_female = canonical
+            else:
+                if last_male is None or pos > text_chunk.rfind(last_male or ''):
+                    last_male = canonical
+
+    return last_male, last_female
 
 
 def extract_dialogues(text, config):
     """
-    Extract all dialogue exchanges between the configured characters.
+    Extract all dialogue with speaker attribution.
 
-    Returns list of exchanges, where each exchange is a list of dicts:
-        {"speaker": str, "text": str, "tone": str|None,
-         "narration": str|None, "pos": int}
+    Returns list of exchanges (list of dicts with speaker, text, tone, narration).
     """
     quotes = find_quotes(text)
-    character_keys = set(config["characters"].keys())
+    aliases = config.get("aliases", {})
+    narrator = config.get("narrator", "Narrator")
+    verb_patterns = _build_verb_pattern()
 
-    # Tracks which character "he"/"she" currently refers to
-    recent_by_pronoun = {}
-
-    # Step 1: attribute each quote to a speaker
+    # Pass 1: attribute speakers and discover character names
+    recent_male = None
+    recent_female = None
+    known_names = set()
     attributed = []
+
     for idx, (quote_start, quote_end, content) in enumerate(quotes):
         content = content.strip()
         if len(content) < 2:
             continue
 
-        # Update pronoun tracking from narration before this quote
+        # Update pronoun context from narration before this quote
         if idx > 0:
-            prev_end = quotes[idx - 1][1]
-            narration_text = text[prev_end:quote_start]
-            update_recent_pronouns(narration_text, config, recent_by_pronoun)
+            narration_text = text[quotes[idx - 1][1]:quote_start]
         else:
             narration_text = text[max(0, quote_start - 200):quote_start]
-            update_recent_pronouns(narration_text, config, recent_by_pronoun)
 
-        speaker, verb = find_speaker(text, quote_start, quote_end, config, recent_by_pronoun)
+        if known_names:
+            m, f = update_pronoun_context(narration_text, known_names, aliases)
+            if m:
+                recent_male = m
+            if f:
+                recent_female = f
+
+        after = text[quote_end:quote_end + 80]
+        before = text[max(0, quote_start - 80):quote_start]
+
+        # Try named attribution first
+        speaker, verb = find_speaker(after, before, verb_patterns, aliases, narrator)
+
+        # Fall back to pronoun resolution
+        if speaker is None:
+            speaker, verb = find_pronoun_speaker(after, verb_patterns, recent_male, recent_female)
+
         tone = VERB_TONES.get(verb) if verb else None
 
-        # Capture narration between this quote and the previous one
+        # Capture narration
         narration = None
         if idx > 0:
             narration = get_narration(text, quotes[idx - 1][1], quote_start)
 
-        # If speaker was found by name, update pronoun tracking
-        if speaker:
-            char_info = config["characters"].get(speaker, {})
-            for pronoun in char_info.get("pronouns", []):
-                recent_by_pronoun[pronoun.lower()] = speaker
+        # Track discovered names
+        if speaker and speaker != narrator:
+            known_names.add(speaker)
+            # Update pronoun context
+            female_names = {
+                'Agatha', 'Florence', 'Honoria', 'Madeline', 'Dahlia', 'Stiffy',
+                'Bobbie', 'Pauline', 'Angela', 'Maud', 'Phyllis', 'Alice',
+                'Cynthia', 'Mary', 'Eve', 'Joan', 'Jill', 'Sally', 'Ann',
+            }
+            if speaker in female_names:
+                recent_female = speaker
+            else:
+                recent_male = speaker
 
         attributed.append({
             "speaker": speaker,
-            "named": speaker is not None,  # was this found by name/pronoun, not alternation?
+            "named": speaker is not None,
             "text": content,
             "tone": tone,
             "narration": narration,
             "pos": quote_start,
-            "end_pos": quote_end,
         })
 
-    # Step 2: fill in missing attributions using alternation
-    # Only alternate after we've seen a named attribution to one of our
-    # target characters. This prevents random dialogue in non-Jeeves books
-    # from being assigned to Jeeves/Bertie.
-    last_speaker = None
-    seen_named = False
-
-    for entry in attributed:
-        if entry["speaker"] is not None:
-            last_speaker = entry["speaker"]
-            seen_named = True
-        elif last_speaker is not None and seen_named:
-            others = [k for k in character_keys if k != last_speaker]
-            if others:
-                entry["speaker"] = others[0]
-                last_speaker = entry["speaker"]
-
-    # Step 3: group into exchanges (consecutive quotes from known speakers)
+    # Pass 2: group into exchanges
     exchanges = []
     current = []
 
@@ -329,7 +300,6 @@ def extract_dialogues(text, config):
             current = []
             continue
 
-        # Gap detection: large gaps mean different scenes
         if current and entry["pos"] - current[-1]["pos"] > 500:
             if len(current) >= 2:
                 exchanges.append(current)
@@ -340,39 +310,30 @@ def extract_dialogues(text, config):
     if len(current) >= 2:
         exchanges.append(current)
 
-    # Step 4: filter for exchanges that involve both characters
-    # AND have at least one turn attributed by name (not just alternation)
+    # Pass 3: filter - require at least 2 different speakers
     filtered = []
     for exchange in exchanges:
-        speakers_present = set(e["speaker"] for e in exchange)
-        has_named = any(e.get("named") for e in exchange)
-        if len(speakers_present & character_keys) >= 2 and has_named:
+        speakers = set(e["speaker"] for e in exchange)
+        if len(speakers) >= 2:
             filtered.append(exchange)
 
     return filtered
 
 
 def format_for_training(exchanges, config, include_narration=True, include_tone=True):
-    """Format exchanges as tagged training text."""
-    tag_map = {}
-    for char_key, char_info in config["characters"].items():
-        tag_map[char_key] = char_info["output_tag"]
-
+    """Format exchanges with <character_name> tags."""
     formatted = []
     for exchange in exchanges:
         lines = []
         for entry in exchange:
-            # Narration before this line
             if include_narration and entry.get("narration"):
                 lines.append(f"<narration>{entry['narration']}")
 
-            # Speaker tag with optional tone
-            base_tag = tag_map.get(entry["speaker"], f"<{entry['speaker']}>")
+            name = entry["speaker"].lower().replace(' ', '_')
             if include_tone and entry.get("tone"):
-                # <jeeves> -> <jeeves:quiet>
-                tag = base_tag[:-1] + f":{entry['tone']}>"
+                tag = f"<{name}:{entry['tone']}>"
             else:
-                tag = base_tag
+                tag = f"<{name}>"
 
             lines.append(f"{tag}{entry['text']}")
 
@@ -383,9 +344,9 @@ def format_for_training(exchanges, config, include_narration=True, include_tone=
 
 def main():
     parser = argparse.ArgumentParser(description="Extract dialogue from literature")
-    parser.add_argument('--config', default='jeeves',
+    parser.add_argument('--config', default='wodehouse',
                         choices=list(CONFIGS.keys()),
-                        help="Which character config to use")
+                        help="Which config to use")
     parser.add_argument('--data', default=None,
                         help="Override data file path")
     parser.add_argument('--output', default=None,
@@ -412,10 +373,7 @@ def main():
         text = f.read()
     print(f"Loaded {len(text):,} characters")
 
-    # Extract
     exchanges = extract_dialogues(text, config)
-
-    # Filter by minimum turns
     exchanges = [e for e in exchanges if len(e) >= args.min_turns]
 
     # Stats
@@ -432,19 +390,19 @@ def main():
                 narration_count += 1
 
     print(f"\nFound {len(exchanges)} exchanges ({total_turns} total turns)")
-    print("Turns per character:")
-    for char_key, count in sorted(char_counts.items(), key=lambda x: -x[1]):
-        tag = config["characters"].get(char_key, {}).get("output_tag", char_key)
-        print(f"  {tag}: {count}")
+    print(f"\nCharacters found ({len(char_counts)}):")
+    for name, count in sorted(char_counts.items(), key=lambda x: -x[1])[:20]:
+        print(f"  <{name.lower()}>: {count} turns")
+    if len(char_counts) > 20:
+        print(f"  ... and {len(char_counts) - 20} more")
 
     if tone_counts:
-        print("Tones detected:")
+        print(f"\nTones:")
         for tone, count in sorted(tone_counts.items(), key=lambda x: -x[1]):
             print(f"  {tone}: {count}")
 
     print(f"Narration lines: {narration_count}")
 
-    # Preview
     include_narration = not args.no_narration
     include_tone = not args.no_tone
 
@@ -457,7 +415,6 @@ def main():
             print(f"\n--- Exchange {i + 1} ---")
             print(exchange)
 
-    # Save
     formatted = format_for_training(exchanges, config, include_narration, include_tone)
     with open(output_file, 'w') as f:
         f.write("\n\n".join(formatted))
