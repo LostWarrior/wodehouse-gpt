@@ -64,12 +64,13 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
              stop_at=None, min_new_tokens=0):
     """
     Generate up to num_tokens new tokens one at a time from a prompt.
-    If stop_at is given (e.g. '\\n<'), stop as soon as it appears in the
-    generated output - but only after min_new_tokens have been produced
-    (so short, trivial replies don't cut us off too early).
+    If stop_at is given (e.g. '\\n<'), stop at the first occurrence that
+    appears AFTER min_new_tokens tokens have been produced (so short
+    authentic Wodehouse one-liners extend into scenes before stopping).
     """
     tokens = torch.tensor(encode(prompt, merges), device=device).unsqueeze(0)
-    prompt_len = len(prompt)
+    min_char_pos = None  # char position after min_new_tokens tokens generated
+
     with torch.no_grad():
         for i in range(num_tokens):
             logits = model(tokens[:, -max_seq_len:])
@@ -77,10 +78,13 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
             next_token = torch.multinomial(probs, 1)
             tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
 
-            if stop_at and i >= min_new_tokens:
+            if stop_at and i + 1 == min_new_tokens:
+                min_char_pos = len(decode(tokens[0].tolist(), merges))
+
+            if stop_at and min_char_pos is not None and i + 1 > min_new_tokens:
                 decoded = decode(tokens[0].tolist(), merges)
-                if stop_at in decoded[prompt_len:]:
-                    idx = decoded.index(stop_at, prompt_len)
+                if stop_at in decoded[min_char_pos:]:
+                    idx = decoded.index(stop_at, min_char_pos)
                     return decoded[:idx]
     return decode(tokens[0].tolist(), merges)
 
