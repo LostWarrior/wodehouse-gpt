@@ -28,7 +28,7 @@ BASE_MODEL_PATH = 'model.pt'
 DIALOGUE_MODEL_PATH = 'model_dialogue.pt'
 DIALOGUE_FILE = 'dialogue_wodehouse.txt'
 MIN_LINES_FOR_RANDOM = 50    # exclude rare or junk tags from random pick
-MIN_REPLY_TOKENS = 60        # suppress stop token until reply is at least this long
+MIN_REPLY_TOKENS = 20        # chat-sized reply: 1-2 sentences from one character
 USER_TAG_DEFAULT = 'bertie'  # stand-in for the user - most prolific speaker, richest conversation data
 USER_TAG_ALT = 'psmith'      # if the character being asked IS bertie
 
