@@ -1,9 +1,11 @@
 """
-Fine-tune the base Wodehouse model on extracted dialogue.
+Fine-tune the base Wodehouse model on extracted dialogue (all 385 characters).
 
 Takes model.pt (trained on all Wodehouse prose) and specializes it
 on dialogue_wodehouse.txt so it learns character tags like <jeeves>,
-<bertie>, <narration>. Saves best-val checkpoint to model_jeeves.pt.
+<bertie>, <caroline>, <narration>. Any character in the training data
+can be prompted at generation time. Saves best-val checkpoint to
+model_dialogue.pt.
 
 Key differences vs train.py:
 - Loads existing model.pt instead of starting fresh
@@ -24,7 +26,7 @@ from config import vocab_size, embed_dim, num_heads, num_layers, max_seq_len, \
 
 # === FINE-TUNING CONFIG (different from train.py) ===
 BASE_MODEL = 'model.pt'
-OUT_MODEL = 'model_jeeves.pt'
+OUT_MODEL = 'model_dialogue.pt'
 DIALOGUE_FILE = 'dialogue_wodehouse.txt'
 
 ft_learning_rate = 3e-5
