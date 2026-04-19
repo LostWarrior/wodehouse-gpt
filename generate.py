@@ -62,8 +62,8 @@ def load_characters():
 
 def _apply_repetition_penalty(logits, recent_tokens, penalty):
     """
-    Divide the logit of every recently-used token by `penalty` so those
-    tokens are less likely to be picked again. Classic anti-stutter fix.
+    Classic HuggingFace-style repetition penalty: divide the logit of any
+    recently-used token by `penalty`. Binary - one hit per unique token.
     A penalty of 1.0 = no effect.
     """
     if penalty == 1.0 or len(recent_tokens) == 0:
@@ -73,7 +73,31 @@ def _apply_repetition_penalty(logits, recent_tokens, penalty):
         if logits[tok] > 0:
             logits[tok] = logits[tok] / penalty
         else:
-            logits[tok] = logits[tok] * penalty  # negative logits: multiply to push further negative
+            logits[tok] = logits[tok] * penalty
+    return logits
+
+
+def _apply_freq_presence_penalty(logits, recent_tokens,
+                                 frequency_penalty, presence_penalty):
+    """
+    OpenAI-style two-knob penalty: subtract a constant per appearance
+    (presence) plus a scaled hit per count (frequency). Unlike the
+    multiplicative repetition_penalty, this is additive - strictly
+    subtracts from logits, which composes cleanly with temperature.
+
+    adjusted_logit = logit
+                     - presence_penalty * (1 if token appeared else 0)
+                     - frequency_penalty * count_in_window
+
+    Set both to 0.0 to disable.
+    """
+    if (frequency_penalty == 0.0 and presence_penalty == 0.0) or len(recent_tokens) == 0:
+        return logits
+    counts = {}
+    for tok in recent_tokens:
+        counts[tok] = counts.get(tok, 0) + 1
+    for tok, count in counts.items():
+        logits[tok] = logits[tok] - presence_penalty - frequency_penalty * count
     return logits
 
 
@@ -110,17 +134,22 @@ def _apply_top_p(logits, p):
 def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
              stop_at=None, min_new_tokens=0,
              top_k=None, top_p=None, repetition_penalty=1.0,
+             frequency_penalty=0.0, presence_penalty=0.0,
              repetition_window=64):
     """
     Generate up to num_tokens new tokens one at a time from a prompt.
 
     Sampling controls (layered before the final random draw):
       - temperature:         dial on the model's confidence curve (peakier or flatter)
-      - repetition_penalty:  shrinks logits for tokens seen in the last
-                             `repetition_window` positions (1.0 = off)
+      - repetition_penalty:  multiplicative, HuggingFace-style (1.0 = off)
+      - frequency_penalty:   additive, scales with count in window (0.0 = off)
+      - presence_penalty:    additive, flat hit if token appeared at all (0.0 = off)
       - top_k:               keep only the k highest-logit tokens (None = off)
       - top_p:               keep the smallest set of tokens covering p
                              cumulative probability (None = off)
+
+    `repetition_penalty` and `frequency/presence_penalty` are redundant - pick
+    one style or the other. Both are exposed so we can A/B them.
 
     Stop controls:
       - stop_at:        substring that ends generation early
@@ -134,9 +163,13 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
         for i in range(num_tokens):
             logits = model(tokens[:, -max_seq_len:])[0, -1, :].clone()
 
+            recent = tokens[0, -repetition_window:].tolist()
             if repetition_penalty != 1.0:
-                recent = tokens[0, -repetition_window:].tolist()
                 logits = _apply_repetition_penalty(logits, recent, repetition_penalty)
+            if frequency_penalty != 0.0 or presence_penalty != 0.0:
+                logits = _apply_freq_presence_penalty(
+                    logits, recent, frequency_penalty, presence_penalty
+                )
 
             logits = logits / temperature
             logits = _apply_top_k(logits, top_k)
@@ -159,7 +192,8 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
 
 def character_reply(model, merges, device, user_input, character,
                     num_tokens, temperature, checker=None, best_of=1,
-                    top_k=None, top_p=None, repetition_penalty=1.0):
+                    top_k=None, top_p=None, repetition_penalty=1.0,
+                    frequency_penalty=0.0, presence_penalty=0.0):
     """
     Build a prompt so the chosen character responds to the user, generate
     best_of candidate scenes, and (if checker is given) return the best-
@@ -179,7 +213,9 @@ def character_reply(model, merges, device, user_input, character,
                           num_tokens, temperature,
                           stop_at='\n<', min_new_tokens=MIN_REPLY_TOKENS,
                           top_k=top_k, top_p=top_p,
-                          repetition_penalty=repetition_penalty)
+                          repetition_penalty=repetition_penalty,
+                          frequency_penalty=frequency_penalty,
+                          presence_penalty=presence_penalty)
         scene_raw = output[prompt_visible_start:]
         scene = _format_scene(scene_raw)
 
@@ -227,7 +263,8 @@ def _format_scene(text):
 def interactive_dialogue(model, merges, device, frequent_chars,
                          fixed_character, num_tokens, temperature,
                          checker, best_of,
-                         top_k=None, top_p=None, repetition_penalty=1.0):
+                         top_k=None, top_p=None, repetition_penalty=1.0,
+                         frequency_penalty=0.0, presence_penalty=0.0):
     """Interactive loop. Either a fixed character replies each turn, or random each turn."""
     print("Type a message and press Enter. Type 'quit' to exit.\n")
     while True:
@@ -244,7 +281,9 @@ def interactive_dialogue(model, merges, device, frequent_chars,
                                         character, num_tokens, temperature,
                                         checker, best_of,
                                         top_k=top_k, top_p=top_p,
-                                        repetition_penalty=repetition_penalty)
+                                        repetition_penalty=repetition_penalty,
+                                        frequency_penalty=frequency_penalty,
+                                        presence_penalty=presence_penalty)
         print(f"\n{scene}\n")
         if detail:
             print(f"[score {detail['overall']:.0%} - "
@@ -270,7 +309,11 @@ def main():
                         help="Nucleus sampling cutoff (0.9 = keep minimum set covering 90%%). "
                              "Use 1.0 to disable.")
     parser.add_argument('--rep-penalty', type=float, default=1.15,
-                        help="Repetition penalty on recent tokens. 1.0 = off.")
+                        help="HuggingFace-style multiplicative repetition penalty. 1.0 = off.")
+    parser.add_argument('--freq-penalty', type=float, default=0.0,
+                        help="OpenAI-style additive frequency penalty (scales with count). 0.0 = off.")
+    parser.add_argument('--presence-penalty', type=float, default=0.0,
+                        help="OpenAI-style additive presence penalty (binary hit). 0.0 = off.")
     args = parser.parse_args()
 
     print("Loading model...")
@@ -282,7 +325,9 @@ def main():
         print("=" * 60)
         print()
         sample_kwargs = dict(top_k=args.top_k, top_p=args.top_p,
-                             repetition_penalty=args.rep_penalty)
+                             repetition_penalty=args.rep_penalty,
+                             frequency_penalty=args.freq_penalty,
+                             presence_penalty=args.presence_penalty)
         if args.prompt:
             print(generate(model, merges, device, args.prompt,
                            args.tokens, args.temp, **sample_kwargs))
@@ -317,12 +362,15 @@ def main():
     print(f"Wodehouse-GPT (dialogue) | Temp: {args.temp} | "
           f"Tokens: {args.tokens} | Best-of: {args.best_of}")
     print(f"top_k: {args.top_k} | top_p: {args.top_p} | "
-          f"rep_penalty: {args.rep_penalty}")
+          f"rep_pen: {args.rep_penalty} | freq_pen: {args.freq_penalty} | "
+          f"presence_pen: {args.presence_penalty}")
     print("=" * 60)
     print()
 
     sample_kwargs = dict(top_k=args.top_k, top_p=args.top_p,
-                         repetition_penalty=args.rep_penalty)
+                         repetition_penalty=args.rep_penalty,
+                         frequency_penalty=args.freq_penalty,
+                         presence_penalty=args.presence_penalty)
 
     if args.prompt:
         character = args.character or random.choice(frequent)
