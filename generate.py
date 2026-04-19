@@ -193,16 +193,27 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
 def character_reply(model, merges, device, user_input, character,
                     num_tokens, temperature, checker=None, best_of=1,
                     top_k=None, top_p=None, repetition_penalty=1.0,
-                    frequency_penalty=0.0, presence_penalty=0.0):
+                    frequency_penalty=0.0, presence_penalty=0.0,
+                    best_of_temperature=None, best_of_top_p=None):
     """
     Build a prompt so the chosen character responds to the user, generate
     best_of candidate scenes, and (if checker is given) return the best-
     scoring one. Early stop kicks in once MIN_REPLY_TOKENS have been
     produced, so replies end on a speaker change but aren't cut too short.
+
+    When best_of > 1, candidate generation can use separate sampling
+    settings (best_of_temperature, best_of_top_p) to produce a wider
+    variety of outputs - reranking works better when candidates differ.
+    If those are None, candidate generation reuses the normal settings.
     """
     user_tag = USER_TAG_ALT if character == USER_TAG_DEFAULT else USER_TAG_DEFAULT
     prompt = f"<{user_tag}>{user_input}\n<{character}>"
     prompt_visible_start = len(prompt) - len(f"<{character}>")
+
+    # When reranking, loosen sampling for candidate diversity.
+    # Single-pass generation keeps normal (strict) settings.
+    gen_temp = best_of_temperature if (best_of > 1 and best_of_temperature is not None) else temperature
+    gen_top_p = best_of_top_p if (best_of > 1 and best_of_top_p is not None) else top_p
 
     best_scene = None
     best_score = -1.0
@@ -210,9 +221,9 @@ def character_reply(model, merges, device, user_input, character,
 
     for _ in range(best_of):
         output = generate(model, merges, device, prompt,
-                          num_tokens, temperature,
+                          num_tokens, gen_temp,
                           stop_at='\n<', min_new_tokens=MIN_REPLY_TOKENS,
-                          top_k=top_k, top_p=top_p,
+                          top_k=top_k, top_p=gen_top_p,
                           repetition_penalty=repetition_penalty,
                           frequency_penalty=frequency_penalty,
                           presence_penalty=presence_penalty)
@@ -264,7 +275,8 @@ def interactive_dialogue(model, merges, device, frequent_chars,
                          fixed_character, num_tokens, temperature,
                          checker, best_of,
                          top_k=None, top_p=None, repetition_penalty=1.0,
-                         frequency_penalty=0.0, presence_penalty=0.0):
+                         frequency_penalty=0.0, presence_penalty=0.0,
+                         best_of_temperature=None, best_of_top_p=None):
     """Interactive loop. Either a fixed character replies each turn, or random each turn."""
     print("Type a message and press Enter. Type 'quit' to exit.\n")
     while True:
@@ -283,7 +295,9 @@ def interactive_dialogue(model, merges, device, frequent_chars,
                                         top_k=top_k, top_p=top_p,
                                         repetition_penalty=repetition_penalty,
                                         frequency_penalty=frequency_penalty,
-                                        presence_penalty=presence_penalty)
+                                        presence_penalty=presence_penalty,
+                                        best_of_temperature=best_of_temperature,
+                                        best_of_top_p=best_of_top_p)
         print(f"\n{scene}\n")
         if detail:
             print(f"[score {detail['overall']:.0%} - "
@@ -314,6 +328,12 @@ def main():
                         help="OpenAI-style additive frequency penalty (scales with count). 0.0 = off.")
     parser.add_argument('--presence-penalty', type=float, default=0.0,
                         help="OpenAI-style additive presence penalty (binary hit). 0.0 = off.")
+    parser.add_argument('--best-of-temp', type=float, default=None,
+                        help="Temperature used only during best-of-N candidate generation "
+                             "(ignored when best-of=1). Higher = more variety among candidates.")
+    parser.add_argument('--best-of-top-p', type=float, default=None,
+                        help="top-p used only during best-of-N candidate generation "
+                             "(ignored when best-of=1). 1.0 = no nucleus filter.")
     args = parser.parse_args()
 
     print("Loading model...")
@@ -370,7 +390,9 @@ def main():
     sample_kwargs = dict(top_k=args.top_k, top_p=args.top_p,
                          repetition_penalty=args.rep_penalty,
                          frequency_penalty=args.freq_penalty,
-                         presence_penalty=args.presence_penalty)
+                         presence_penalty=args.presence_penalty,
+                         best_of_temperature=args.best_of_temp,
+                         best_of_top_p=args.best_of_top_p)
 
     if args.prompt:
         character = args.character or random.choice(frequent)
