@@ -21,12 +21,16 @@ import torch
 import torch.nn.functional as F
 from model import WodehouseGPT
 from bpe_tokenizer import encode, decode, load as bpe_load
+from checker import Checker
 from config import vocab_size, embed_dim, num_heads, num_layers, max_seq_len
 
 BASE_MODEL_PATH = 'model.pt'
 DIALOGUE_MODEL_PATH = 'model_dialogue.pt'
 DIALOGUE_FILE = 'dialogue_wodehouse.txt'
-MIN_LINES_FOR_RANDOM = 20  # exclude rarely-spoken characters from random pick
+MIN_LINES_FOR_RANDOM = 50    # exclude rare or junk tags from random pick
+MIN_REPLY_TOKENS = 60        # suppress stop token until reply is at least this long
+USER_TAG_DEFAULT = 'bertie'  # stand-in for the user - most prolific speaker, richest conversation data
+USER_TAG_ALT = 'psmith'      # if the character being asked IS bertie
 
 
 def load_model(path):
@@ -57,47 +61,97 @@ def load_characters():
 
 
 def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
-             stop_at=None):
+             stop_at=None, min_new_tokens=0):
     """
-    Generate text one token at a time starting from a prompt.
-    If stop_at is given (e.g. '\\n<'), stop as soon as that string appears
-    in the decoded output past the prompt length.
+    Generate up to num_tokens new tokens one at a time from a prompt.
+    If stop_at is given (e.g. '\\n<'), stop as soon as it appears in the
+    generated output - but only after min_new_tokens have been produced
+    (so short, trivial replies don't cut us off too early).
     """
     tokens = torch.tensor(encode(prompt, merges), device=device).unsqueeze(0)
     prompt_len = len(prompt)
-
     with torch.no_grad():
-        for _ in range(num_tokens):
+        for i in range(num_tokens):
             logits = model(tokens[:, -max_seq_len:])
             probs = F.softmax(logits[0, -1, :] / temperature, dim=-1)
             next_token = torch.multinomial(probs, 1)
             tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
 
-            if stop_at:
+            if stop_at and i >= min_new_tokens:
                 decoded = decode(tokens[0].tolist(), merges)
                 if stop_at in decoded[prompt_len:]:
                     idx = decoded.index(stop_at, prompt_len)
                     return decoded[:idx]
-
     return decode(tokens[0].tolist(), merges)
 
 
 def character_reply(model, merges, device, user_input, character,
-                    num_tokens, temperature):
+                    num_tokens, temperature, checker=None, best_of=1):
     """
-    Build a prompt so the chosen character responds to the user.
-    Uses <narration> for the user's side (model already knows this tag),
-    then opens <character> and lets the model continue.
+    Build a prompt so the chosen character responds to the user, generate
+    best_of candidate scenes, and (if checker is given) return the best-
+    scoring one. Early stop kicks in once MIN_REPLY_TOKENS have been
+    produced, so replies end on a speaker change but aren't cut too short.
     """
-    prompt = f"<narration>{user_input}\n<{character}>"
-    output = generate(model, merges, device, prompt,
-                      num_tokens, temperature, stop_at='\n<')
-    reply = output[len(prompt):].strip()
-    return reply
+    user_tag = USER_TAG_ALT if character == USER_TAG_DEFAULT else USER_TAG_DEFAULT
+    prompt = f"<{user_tag}>{user_input}\n<{character}>"
+    prompt_visible_start = len(prompt) - len(f"<{character}>")
+
+    best_scene = None
+    best_score = -1.0
+    best_detail = None
+
+    for _ in range(best_of):
+        output = generate(model, merges, device, prompt,
+                          num_tokens, temperature,
+                          stop_at='\n<', min_new_tokens=MIN_REPLY_TOKENS)
+        scene_raw = output[prompt_visible_start:]
+        scene = _format_scene(scene_raw)
+
+        if checker is None:
+            return scene, None
+
+        result = checker.score(_strip_tags(scene))
+        if result['overall'] > best_score:
+            best_score = result['overall']
+            best_scene = scene
+            best_detail = result
+
+    return best_scene, best_detail
+
+
+def _strip_tags(text):
+    """Remove <character> tags so the checker scores just the prose."""
+    return re.sub(r'<[a-z_]+(?::[a-z_]+)?>', ' ', text)
+
+
+def _format_scene(text):
+    """Turn '<bertie>...\\n<jeeves>...' runs into readable lines.
+    Skips empty turns (e.g. model stutters like <jeeves><jeeves>) and
+    drops trailing partial tags the token budget cut off.
+    """
+    import re
+    tag_re = re.compile(r'<([a-z_]+)(?::[a-z_]+)?>')
+    pieces = []
+    last_end = 0
+    last_tag = None
+    for m in tag_re.finditer(text):
+        if last_tag is not None:
+            content = text[last_end:m.start()].strip()
+            if content:
+                pieces.append(f"<{last_tag}> {content}")
+        last_tag = m.group(1)
+        last_end = m.end()
+    if last_tag is not None:
+        content = text[last_end:].strip()
+        if content and '<' not in content[-10:]:  # drop if cut off mid-tag
+            pieces.append(f"<{last_tag}> {content}")
+    return "\n\n".join(pieces)
 
 
 def interactive_dialogue(model, merges, device, frequent_chars,
-                         fixed_character, num_tokens, temperature):
+                         fixed_character, num_tokens, temperature,
+                         checker, best_of):
     """Interactive loop. Either a fixed character replies each turn, or random each turn."""
     print("Type a message and press Enter. Type 'quit' to exit.\n")
     while True:
@@ -110,9 +164,14 @@ def interactive_dialogue(model, merges, device, frequent_chars,
             print("Bye!")
             break
         character = fixed_character or random.choice(frequent_chars)
-        reply = character_reply(model, merges, device, user_input,
-                                character, num_tokens, temperature)
-        print(f"\n<{character}> {reply}\n")
+        scene, detail = character_reply(model, merges, device, user_input,
+                                        character, num_tokens, temperature,
+                                        checker, best_of)
+        print(f"\n{scene}\n")
+        if detail:
+            print(f"[score {detail['overall']:.0%} - "
+                  f"words {detail['word']:.0%} / ngram {detail['ngram']:.0%} / "
+                  f"rep {detail['repetition']:.0%} / distinct {detail['distinctive']:.0%}]\n")
 
 
 def main():
@@ -125,6 +184,8 @@ def main():
                         help="Use raw base model, no character wrapping")
     parser.add_argument('--tokens', type=int, default=200, help="Tokens to generate")
     parser.add_argument('--temp', type=float, default=0.8, help="Temperature")
+    parser.add_argument('--best-of', type=int, default=1,
+                        help="Sample N candidates and return highest checker score")
     args = parser.parse_args()
 
     print("Loading model...")
@@ -154,24 +215,35 @@ def main():
     model, merges, device = load_model(DIALOGUE_MODEL_PATH)
     all_chars, frequent = load_characters()
 
+    checker = None
+    if args.best_of > 1:
+        checker = Checker('data.txt')
+
     if args.character and args.character not in all_chars:
         print(f"Warning: '{args.character}' not in training data.")
         print(f"Known characters (top 10 by line count): see dialogue_wodehouse.txt")
         print(f"Proceeding anyway - model will try its best.\n")
 
     print("=" * 60)
-    print(f"Wodehouse-GPT (dialogue) | Temp: {args.temp} | Tokens: {args.tokens}")
+    print(f"Wodehouse-GPT (dialogue) | Temp: {args.temp} | "
+          f"Tokens: {args.tokens} | Best-of: {args.best_of}")
     print("=" * 60)
     print()
 
     if args.prompt:
         character = args.character or random.choice(frequent)
-        reply = character_reply(model, merges, device, args.prompt,
-                                character, args.tokens, args.temp)
-        print(f"<{character}> {reply}")
+        scene, detail = character_reply(model, merges, device, args.prompt,
+                                        character, args.tokens, args.temp,
+                                        checker, args.best_of)
+        print(scene)
+        if detail:
+            print(f"\n[score {detail['overall']:.0%} - "
+                  f"words {detail['word']:.0%} / ngram {detail['ngram']:.0%} / "
+                  f"rep {detail['repetition']:.0%} / distinct {detail['distinctive']:.0%}]")
     else:
         interactive_dialogue(model, merges, device, frequent,
-                             args.character, args.tokens, args.temp)
+                             args.character, args.tokens, args.temp,
+                             checker, args.best_of)
 
 
 if __name__ == '__main__':
