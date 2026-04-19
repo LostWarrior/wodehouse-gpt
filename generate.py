@@ -60,21 +60,89 @@ def load_characters():
     return all_chars, frequent
 
 
+def _apply_repetition_penalty(logits, recent_tokens, penalty):
+    """
+    Divide the logit of every recently-used token by `penalty` so those
+    tokens are less likely to be picked again. Classic anti-stutter fix.
+    A penalty of 1.0 = no effect.
+    """
+    if penalty == 1.0 or len(recent_tokens) == 0:
+        return logits
+    unique_recent = set(recent_tokens)
+    for tok in unique_recent:
+        if logits[tok] > 0:
+            logits[tok] = logits[tok] / penalty
+        else:
+            logits[tok] = logits[tok] * penalty  # negative logits: multiply to push further negative
+    return logits
+
+
+def _apply_top_k(logits, k):
+    """Keep only the top-k logits; set the rest to -inf so softmax drops them."""
+    if k is None or k <= 0 or k >= logits.size(-1):
+        return logits
+    top_values, _ = torch.topk(logits, k)
+    threshold = top_values[-1]
+    logits = logits.masked_fill(logits < threshold, float('-inf'))
+    return logits
+
+
+def _apply_top_p(logits, p):
+    """
+    Nucleus sampling: keep the smallest set of tokens whose cumulative
+    probability is >= p. Drop the rest (set to -inf).
+    """
+    if p is None or p >= 1.0 or p <= 0.0:
+        return logits
+    sorted_logits, sorted_idx = torch.sort(logits, descending=True)
+    sorted_probs = F.softmax(sorted_logits, dim=-1)
+    cumulative = torch.cumsum(sorted_probs, dim=-1)
+    # Tokens to drop: those past the cumulative-p boundary. Keep the first token always.
+    drop_sorted = cumulative > p
+    drop_sorted[0] = False  # keep the top one even if it alone exceeds p
+    # Scatter back to original positions
+    drop_mask = torch.zeros_like(logits, dtype=torch.bool)
+    drop_mask[sorted_idx[drop_sorted]] = True
+    logits = logits.masked_fill(drop_mask, float('-inf'))
+    return logits
+
+
 def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
-             stop_at=None, min_new_tokens=0):
+             stop_at=None, min_new_tokens=0,
+             top_k=None, top_p=None, repetition_penalty=1.0,
+             repetition_window=64):
     """
     Generate up to num_tokens new tokens one at a time from a prompt.
-    If stop_at is given (e.g. '\\n<'), stop at the first occurrence that
-    appears AFTER min_new_tokens tokens have been produced (so short
-    authentic Wodehouse one-liners extend into scenes before stopping).
+
+    Sampling controls (layered before the final random draw):
+      - temperature:         dial on the model's confidence curve (peakier or flatter)
+      - repetition_penalty:  shrinks logits for tokens seen in the last
+                             `repetition_window` positions (1.0 = off)
+      - top_k:               keep only the k highest-logit tokens (None = off)
+      - top_p:               keep the smallest set of tokens covering p
+                             cumulative probability (None = off)
+
+    Stop controls:
+      - stop_at:        substring that ends generation early
+      - min_new_tokens: suppress stop checking until this many new tokens
+                        have been produced (prevents premature cut-offs)
     """
     tokens = torch.tensor(encode(prompt, merges), device=device).unsqueeze(0)
-    min_char_pos = None  # char position after min_new_tokens tokens generated
+    min_char_pos = None
 
     with torch.no_grad():
         for i in range(num_tokens):
-            logits = model(tokens[:, -max_seq_len:])
-            probs = F.softmax(logits[0, -1, :] / temperature, dim=-1)
+            logits = model(tokens[:, -max_seq_len:])[0, -1, :].clone()
+
+            if repetition_penalty != 1.0:
+                recent = tokens[0, -repetition_window:].tolist()
+                logits = _apply_repetition_penalty(logits, recent, repetition_penalty)
+
+            logits = logits / temperature
+            logits = _apply_top_k(logits, top_k)
+            logits = _apply_top_p(logits, top_p)
+
+            probs = F.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, 1)
             tokens = torch.cat([tokens, next_token.unsqueeze(0)], dim=1)
 
@@ -90,7 +158,8 @@ def generate(model, merges, device, prompt, num_tokens=200, temperature=0.8,
 
 
 def character_reply(model, merges, device, user_input, character,
-                    num_tokens, temperature, checker=None, best_of=1):
+                    num_tokens, temperature, checker=None, best_of=1,
+                    top_k=None, top_p=None, repetition_penalty=1.0):
     """
     Build a prompt so the chosen character responds to the user, generate
     best_of candidate scenes, and (if checker is given) return the best-
@@ -108,7 +177,9 @@ def character_reply(model, merges, device, user_input, character,
     for _ in range(best_of):
         output = generate(model, merges, device, prompt,
                           num_tokens, temperature,
-                          stop_at='\n<', min_new_tokens=MIN_REPLY_TOKENS)
+                          stop_at='\n<', min_new_tokens=MIN_REPLY_TOKENS,
+                          top_k=top_k, top_p=top_p,
+                          repetition_penalty=repetition_penalty)
         scene_raw = output[prompt_visible_start:]
         scene = _format_scene(scene_raw)
 
@@ -155,7 +226,8 @@ def _format_scene(text):
 
 def interactive_dialogue(model, merges, device, frequent_chars,
                          fixed_character, num_tokens, temperature,
-                         checker, best_of):
+                         checker, best_of,
+                         top_k=None, top_p=None, repetition_penalty=1.0):
     """Interactive loop. Either a fixed character replies each turn, or random each turn."""
     print("Type a message and press Enter. Type 'quit' to exit.\n")
     while True:
@@ -170,7 +242,9 @@ def interactive_dialogue(model, merges, device, frequent_chars,
         character = fixed_character or random.choice(frequent_chars)
         scene, detail = character_reply(model, merges, device, user_input,
                                         character, num_tokens, temperature,
-                                        checker, best_of)
+                                        checker, best_of,
+                                        top_k=top_k, top_p=top_p,
+                                        repetition_penalty=repetition_penalty)
         print(f"\n{scene}\n")
         if detail:
             print(f"[score {detail['overall']:.0%} - "
@@ -190,6 +264,13 @@ def main():
     parser.add_argument('--temp', type=float, default=0.8, help="Temperature")
     parser.add_argument('--best-of', type=int, default=1,
                         help="Sample N candidates and return highest checker score")
+    parser.add_argument('--top-k', type=int, default=None,
+                        help="Keep only top K candidate tokens per step (off by default)")
+    parser.add_argument('--top-p', type=float, default=0.9,
+                        help="Nucleus sampling cutoff (0.9 = keep minimum set covering 90%%). "
+                             "Use 1.0 to disable.")
+    parser.add_argument('--rep-penalty', type=float, default=1.15,
+                        help="Repetition penalty on recent tokens. 1.0 = off.")
     args = parser.parse_args()
 
     print("Loading model...")
@@ -200,8 +281,11 @@ def main():
         print("Wodehouse-GPT (base model) | Temp:", args.temp, "| Tokens:", args.tokens)
         print("=" * 60)
         print()
+        sample_kwargs = dict(top_k=args.top_k, top_p=args.top_p,
+                             repetition_penalty=args.rep_penalty)
         if args.prompt:
-            print(generate(model, merges, device, args.prompt, args.tokens, args.temp))
+            print(generate(model, merges, device, args.prompt,
+                           args.tokens, args.temp, **sample_kwargs))
         else:
             while True:
                 try:
@@ -212,7 +296,8 @@ def main():
                 if p.lower() in ('quit', 'exit', 'q'):
                     break
                 print()
-                print(generate(model, merges, device, p or "\n", args.tokens, args.temp))
+                print(generate(model, merges, device, p or "\n",
+                               args.tokens, args.temp, **sample_kwargs))
                 print()
         return
 
@@ -231,14 +316,19 @@ def main():
     print("=" * 60)
     print(f"Wodehouse-GPT (dialogue) | Temp: {args.temp} | "
           f"Tokens: {args.tokens} | Best-of: {args.best_of}")
+    print(f"top_k: {args.top_k} | top_p: {args.top_p} | "
+          f"rep_penalty: {args.rep_penalty}")
     print("=" * 60)
     print()
+
+    sample_kwargs = dict(top_k=args.top_k, top_p=args.top_p,
+                         repetition_penalty=args.rep_penalty)
 
     if args.prompt:
         character = args.character or random.choice(frequent)
         scene, detail = character_reply(model, merges, device, args.prompt,
                                         character, args.tokens, args.temp,
-                                        checker, args.best_of)
+                                        checker, args.best_of, **sample_kwargs)
         print(scene)
         if detail:
             print(f"\n[score {detail['overall']:.0%} - "
@@ -247,7 +337,7 @@ def main():
     else:
         interactive_dialogue(model, merges, device, frequent,
                              args.character, args.tokens, args.temp,
-                             checker, args.best_of)
+                             checker, args.best_of, **sample_kwargs)
 
 
 if __name__ == '__main__':
