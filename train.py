@@ -35,9 +35,15 @@ print("Loading data...")
 with open('data.txt', 'r') as f:
     text = f.read()
 
-# Train tokenizer on first 1M chars (frequencies stabilize well before this).
-# Then encode the full text using those merge rules.
-merges, _ = bpe_train(text[:1_000_000], vocab_size)
+# BPE sees prose + dialogue together so character tags like <jeeves>,
+# <bertie>, <narration> become single tokens. Without this, each tag
+# gets chopped into 3-4 subword pieces and the model has to memorise
+# the multi-token pattern of every speaker.
+with open('dialogue_wodehouse.txt', 'r') as f:
+    dialogue = f.read()
+bpe_training_corpus = text[:1_000_000] + '\n' + dialogue[:500_000]
+
+merges, _ = bpe_train(bpe_training_corpus, vocab_size)
 bpe_save(merges)
 
 data = torch.tensor(apply_merges(text, merges))
